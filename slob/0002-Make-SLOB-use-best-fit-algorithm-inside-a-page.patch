@@ -1,0 +1,131 @@
+From 7c3f5ec71fd32bd30669906f2c6efb5239cbc516 Mon Sep 17 00:00:00 2001
+From: Vitaly Osipov <vitaly.osipov@gmail.com>
+Date: Tue, 13 May 2014 21:52:22 +1000
+Subject: [PATCH 2/2] Make SLOB use best-fit algorithm inside a page
+
+Modified SLOB allocator to use best-fit algorithm when allocating a
+block inside slob_page_alloc. Also added two syscalls to obtain the
+amount of memory actually used vs reserved.
+
+Signed-off-by: Vitaly Osipov <vitaly.osipov@gmail.com>
+---
+ Makefile  |  2 +-
+ mm/slob.c | 80 ++++++++++++++++++++++++++++++++++++++-------------------------
+ 2 files changed, 50 insertions(+), 32 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 7046756..257e2ff 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,7 +1,7 @@
+ VERSION = 3
+ PATCHLEVEL = 15
+ SUBLEVEL = 0
+-EXTRAVERSION = -rc4
++EXTRAVERSION = -rc4-slob-bf
+ NAME = Shuffling Zombie Juror
+ 
+ # *DOCUMENTATION*
+diff --git a/mm/slob.c b/mm/slob.c
+index 39c3546..b1773da 100644
+--- a/mm/slob.c
++++ b/mm/slob.c
+@@ -234,6 +234,10 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
+ 	slob_t *prev, *cur, *aligned = NULL;
+ 	int delta = 0, units = SLOB_UNITS(size);
+ 
++	slob_t *bprev = NULL, *bcur = NULL, *baligned = NULL;
++	int bdelta = 0;
++	slobidx_t bavail = SLOB_UNITS(PAGE_SIZE);
++
+ 	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur)) {
+ 		slobidx_t avail = slob_units(cur);
+ 
+@@ -241,39 +245,53 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
+ 			aligned = (slob_t *)ALIGN((unsigned long)cur, align);
+ 			delta = aligned - cur;
+ 		}
+-		if (avail >= units + delta) { /* room enough? */
+-			slob_t *next;
+-
+-			if (delta) { /* need to fragment head to align? */
+-				next = slob_next(cur);
+-				set_slob(aligned, avail - delta, next);
+-				set_slob(cur, delta, aligned);
+-				prev = cur;
+-				cur = aligned;
+-				avail = slob_units(cur);
+-			}
+-
+-			next = slob_next(cur);
+-			if (avail == units) { /* exact fit? unlink. */
+-				if (prev)
+-					set_slob(prev, slob_units(prev), next);
+-				else
+-					sp->freelist = next;
+-			} else { /* fragment */
+-				if (prev)
+-					set_slob(prev, slob_units(prev), cur + units);
+-				else
+-					sp->freelist = cur + units;
+-				set_slob(cur + units, avail - units, next);
++		if (avail >= units + delta &&
++		    (!bcur || avail < bavail)) { /* room enough? */
++			bprev = prev;
++			bcur = cur;
++			baligned = aligned;
++			bdelta = delta;
++			bavail = avail;
++		}
++		if (slob_last(cur)) {
++			if (bcur) {
++
++				slob_t *bnext = NULL;
++
++				if (bdelta) {
++					/* need to fragment head to align? */
++					bnext = slob_next(bcur);
++					set_slob(baligned, bavail-bdelta, bnext);
++					set_slob(bcur, bdelta, baligned);
++					bprev = bcur;
++					bcur = baligned;
++					bavail = slob_units(bcur);
++				}
++
++				bnext = slob_next(bcur);
++				if (bavail == units) { /* exact fit? unlink. */
++					if (bprev)
++						set_slob(bprev,
++							 slob_units(bprev),
++							 bnext);
++					else
++						sp->freelist = bnext;
++				} else { /* fragment */
++					if (bprev)
++						set_slob(bprev,
++							 slob_units(bprev),
++							 bcur + units);
++					else
++						sp->freelist = bcur + units;
++					set_slob(bcur + units, bavail-units, bnext);
++				}
++
++				sp->units -= units;
++				if (!sp->units)
++					clear_slob_page_free(sp);
+ 			}
+-
+-			sp->units -= units;
+-			if (!sp->units)
+-				clear_slob_page_free(sp);
+-			return cur;
++			return bcur;
+ 		}
+-		if (slob_last(cur))
+-			return NULL;
+ 	}
+ }
+ 
+-- 
+1.9.1
+
