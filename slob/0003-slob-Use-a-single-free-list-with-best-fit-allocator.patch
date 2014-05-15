@@ -1,0 +1,160 @@
+From f4efae3354e155cdea97851dfffa30ade2b99c90 Mon Sep 17 00:00:00 2001
+From: Vitaly Osipov <vitaly.osipov@gmail.com>
+Date: Thu, 15 May 2014 18:51:00 +1000
+Subject: [PATCH 3/3] slob: Use a single free list with best-fit allocator
+
+Reversing 20cecbae4.
+
+Signed-off-by: Vitaly Osipov <vitaly.osipov@gmail.com>
+---
+ mm/slob.c | 65 ++++++++++++++++++---------------------------------------------
+ 1 file changed, 18 insertions(+), 47 deletions(-)
+
+diff --git a/mm/slob.c b/mm/slob.c
+index b1773da..afabf2e 100644
+--- a/mm/slob.c
++++ b/mm/slob.c
+@@ -12,17 +12,14 @@
+  * allocator is as little as 2 bytes, however typically most architectures
+  * will require 4 bytes on 32-bit and 8 bytes on 64-bit.
+  *
+- * The slob heap is a set of linked list of pages from alloc_pages(),
++ * The slob heap is a set of  of pages from alloc_pages(),
+  * and within each page, there is a singly-linked list of free blocks
+- * (slob_t). The heap is grown on demand. To reduce fragmentation,
+- * heap pages are segregated into three lists, with objects less than
+- * 256 bytes, objects less than 1024 bytes, and all other objects.
++ * (slob_t). The heap is grown on demand. and allocation from the heap
++ * is now best-fit.
+  *
+  * Allocation from heap involves first searching for a page with
+  * sufficient free blocks (using a next-fit-like approach) followed by
+- * a first-fit scan of the page. Deallocation inserts objects back
+- * into the free list in address order, so this is effectively an
+- * address-ordered first fit.
++ * a best-fit scan of the page.
+  *
+  * Above this is an implementation of kmalloc/kfree. Blocks returned
+  * from kmalloc are prepended with a 4-byte header with the kmalloc size.
+@@ -94,15 +91,12 @@ struct slob_block {
+ typedef struct slob_block slob_t;
+ 
+ /*
+- * All partially free slob pages go on these lists.
++ * All partially free slob pages go on this list.
+  */
+-#define SLOB_BREAK1 256
+-#define SLOB_BREAK2 1024
+-static LIST_HEAD(free_slob_small);
+-static LIST_HEAD(free_slob_medium);
+-static LIST_HEAD(free_slob_large);
+ 
+-static unsigned int mem_total;
++static LIST_HEAD(free_slob_pages);
++
++static long mem_total;
+ 
+ /*
+  * slob_page_free: true for pages on free_slob_pages list.
+@@ -112,9 +106,9 @@ static inline int slob_page_free(struct page *sp)
+ 	return PageSlobFree(sp);
+ }
+ 
+-static void set_slob_page_free(struct page *sp, struct list_head *list)
++static void set_slob_page_free(struct page *sp)
+ {
+-	list_add(&sp->lru, list);
++	list_add(&sp->lru, &free_slob_pages);
+ 	__SetPageSlobFree(sp);
+ }
+ 
+@@ -302,20 +296,12 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
+ {
+ 	struct page *sp;
+ 	struct list_head *prev;
+-	struct list_head *slob_list;
+ 	slob_t *b = NULL;
+ 	unsigned long flags;
+ 
+-	if (size < SLOB_BREAK1)
+-		slob_list = &free_slob_small;
+-	else if (size < SLOB_BREAK2)
+-		slob_list = &free_slob_medium;
+-	else
+-		slob_list = &free_slob_large;
+-
+ 	spin_lock_irqsave(&slob_lock, flags);
+ 	/* Iterate through each partially free page, try to find room */
+-	list_for_each_entry(sp, slob_list, lru) {
++	list_for_each_entry(sp, &free_slob_pages, lru) {
+ #ifdef CONFIG_NUMA
+ 		/*
+ 		 * If there's a node specification, search for a partial
+@@ -337,9 +323,9 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
+ 		/* Improve fragment distribution and reduce our average
+ 		 * search time by starting our next search here. (see
+ 		 * Knuth vol 1, sec 2.5, pg 449) */
+-		if (prev != slob_list->prev &&
+-				slob_list->next != prev->next)
+-			list_move_tail(slob_list, prev->next);
++		if (prev != free_slob_pages.prev &&
++				free_slob_pages.next != prev->next)
++			list_move_tail(&free_slob_pages, prev->next);
+ 
+ 		break;
+ 	}
+@@ -359,7 +345,7 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
+ 		sp->freelist = b;
+ 		INIT_LIST_HEAD(&sp->lru);
+ 		set_slob(b, SLOB_UNITS(PAGE_SIZE), b + SLOB_UNITS(PAGE_SIZE));
+-		set_slob_page_free(sp, slob_list);
++		set_slob_page_free(sp);
+ 		b = slob_page_alloc(sp, size, align);
+ 		BUG_ON(!b);
+ 		spin_unlock_irqrestore(&slob_lock, flags);
+@@ -378,7 +364,6 @@ static void slob_free(void *block, int size)
+ 	slob_t *prev, *next, *b = (slob_t *)block;
+ 	slobidx_t units;
+ 	unsigned long flags;
+-	struct list_head *slob_list;
+ 
+ 	if (unlikely(ZERO_OR_NULL_PTR(block)))
+ 		return;
+@@ -408,13 +393,7 @@ static void slob_free(void *block, int size)
+ 		set_slob(b, units,
+ 			(void *)((unsigned long)(b +
+ 					SLOB_UNITS(PAGE_SIZE)) & PAGE_MASK));
+-		if (size < SLOB_BREAK1)
+-			slob_list = &free_slob_small;
+-		else if (size < SLOB_BREAK2)
+-			slob_list = &free_slob_medium;
+-		else
+-			slob_list = &free_slob_large;
+-		set_slob_page_free(sp, slob_list);
++		set_slob_page_free(sp);
+ 		goto out;
+ 	}
+ 
+@@ -687,17 +666,9 @@ SYSCALL_DEFINE0(slob_claimed)
+ SYSCALL_DEFINE0(slob_free)
+ {
+ 	struct page *sp;
+-	u64 lfree = 0;
+-
+-	list_for_each_entry(sp, &free_slob_small, lru) {
+-		lfree += slob_free_space(sp);
+-	}
+-
+-	list_for_each_entry(sp, &free_slob_medium, lru) {
+-		lfree += slob_free_space(sp);
+-	}
++	long lfree = 0;
+ 
+-	list_for_each_entry(sp, &free_slob_large, lru) {
++	list_for_each_entry(sp, &free_slob_pages, lru) {
+ 		lfree += slob_free_space(sp);
+ 	}
+ 
+-- 
+1.9.1
+

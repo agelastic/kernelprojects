@@ -1,7 +1,7 @@
 From 7c3f5ec71fd32bd30669906f2c6efb5239cbc516 Mon Sep 17 00:00:00 2001
 From: Vitaly Osipov <vitaly.osipov@gmail.com>
 Date: Tue, 13 May 2014 21:52:22 +1000
-Subject: [PATCH 2/2] Make SLOB use best-fit algorithm inside a page
+Subject: [PATCH 2/3] Make SLOB use best-fit algorithm inside a page
 
 Modified SLOB allocator to use best-fit algorithm when allocating a
 block inside slob_page_alloc. Also added two syscalls to obtain the
