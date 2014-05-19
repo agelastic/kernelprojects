@@ -1,0 +1,129 @@
+From 2c0f935ffa7d41ad3d28819c0b027e6bec3448f3 Mon Sep 17 00:00:00 2001
+From: Vitaly Osipov <vitaly.osipov@gmail.com>
+Date: Mon, 19 May 2014 23:23:18 +1000
+Subject: [PATCH 4/4] Slob: making best-fit produce fewer small blocks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+As in Knuth vol.1 2.5, "The constant c in step A4′ was
+set to 16, to eliminate small blocks"
+
+FUDGE_FACTOR in slob_page_alloc() is the equivalent of c
+
+Signed-off-by: Vitaly Osipov <vitaly.osipov@gmail.com>
+---
+ mm/slob.c | 81 +++++++++++++++++++++++++++++++++------------------------------
+ 1 file changed, 42 insertions(+), 39 deletions(-)
+
+diff --git a/mm/slob.c b/mm/slob.c
+index afabf2e..0c03863 100644
+--- a/mm/slob.c
++++ b/mm/slob.c
+@@ -223,6 +223,9 @@ static int slob_free_space(struct page *sp)
+ /*
+  * Allocate a slob block within a given slob_page sp.
+  */
++
++#define FUDGE_FACTOR 16
++
+ static void *slob_page_alloc(struct page *sp, size_t size, int align)
+ {
+ 	slob_t *prev, *cur, *aligned = NULL;
+@@ -239,54 +242,54 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
+ 			aligned = (slob_t *)ALIGN((unsigned long)cur, align);
+ 			delta = aligned - cur;
+ 		}
+-		if (avail >= units + delta &&
++		if ((avail >= units + delta) &&
+ 		    (!bcur || avail < bavail)) { /* room enough? */
+ 			bprev = prev;
+ 			bcur = cur;
+ 			baligned = aligned;
+ 			bdelta = delta;
+ 			bavail = avail;
++			if ((bavail <= units + FUDGE_FACTOR))
++				break;
++		}
++		if (slob_last(cur))
++			break;
++	}
++	if (bcur) {
++		slob_t *bnext = NULL;
++
++		if (bdelta) {
++			/* need to fragment head to align? */
++			bnext = slob_next(bcur);
++			set_slob(baligned, bavail-bdelta, bnext);
++			set_slob(bcur, bdelta, baligned);
++			bprev = bcur;
++			bcur = baligned;
++			bavail = slob_units(bcur);
+ 		}
+-		if (slob_last(cur)) {
+-			if (bcur) {
+-
+-				slob_t *bnext = NULL;
+-
+-				if (bdelta) {
+-					/* need to fragment head to align? */
+-					bnext = slob_next(bcur);
+-					set_slob(baligned, bavail-bdelta, bnext);
+-					set_slob(bcur, bdelta, baligned);
+-					bprev = bcur;
+-					bcur = baligned;
+-					bavail = slob_units(bcur);
+-				}
+-
+-				bnext = slob_next(bcur);
+-				if (bavail == units) { /* exact fit? unlink. */
+-					if (bprev)
+-						set_slob(bprev,
+-							 slob_units(bprev),
+-							 bnext);
+-					else
+-						sp->freelist = bnext;
+-				} else { /* fragment */
+-					if (bprev)
+-						set_slob(bprev,
+-							 slob_units(bprev),
+-							 bcur + units);
+-					else
+-						sp->freelist = bcur + units;
+-					set_slob(bcur + units, bavail-units, bnext);
+-				}
+-
+-				sp->units -= units;
+-				if (!sp->units)
+-					clear_slob_page_free(sp);
+-			}
+-			return bcur;
++
++		bnext = slob_next(bcur);
++		if (bavail <= units + FUDGE_FACTOR) {
++			/* good fit? unlink. */
++			if (bprev)
++				set_slob(bprev, slob_units(bprev), bnext);
++			else
++				sp->freelist = bnext;
++			sp->units -= bavail;
++		} else { /* fragment */
++			if (bprev)
++				set_slob(bprev, slob_units(bprev),
++					bcur + units);
++			else
++				sp->freelist = bcur + units;
++			set_slob(bcur + units, bavail-units, bnext);
++			sp->units -= units;
+ 		}
++
++		if (!sp->units)
++			clear_slob_page_free(sp);
+ 	}
++	return bcur;
+ }
+ 
+ /*
+-- 
+1.9.1
+
