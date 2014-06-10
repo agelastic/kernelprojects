@@ -1,4 +1,4 @@
-From bb00826e7bebbc371e8b8f9b1362a1166b22f354 Mon Sep 17 00:00:00 2001
+From d1241821c0b7d289e5b9a3eeadceb5ec9c2d3d67 Mon Sep 17 00:00:00 2001
 From: Vitaly Osipov <vitaly.osipov@gmail.com>
 Date: Tue, 10 Jun 2014 16:11:15 +1000
 Subject: [PATCH] block: add a shortest seek time first I/O scheduler
@@ -7,14 +7,14 @@ Based on the noop scheduler with a few modifications.
 
 Signed-off-by: Vitaly Osipov <vitaly.osipov@gmail.com>
 ---
- block/Kconfig.iosched |   6 ++
+ block/Kconfig.iosched |  10 ++++
  block/Makefile        |   2 +
- block/sstf-iosched.c  | 149 ++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 157 insertions(+)
+ block/sstf-iosched.c  | 151 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 163 insertions(+)
  create mode 100644 block/sstf-iosched.c
 
 diff --git a/block/Kconfig.iosched b/block/Kconfig.iosched
-index 421bef9..9092225 100644
+index 421bef9..2732eb7 100644
 --- a/block/Kconfig.iosched
 +++ b/block/Kconfig.iosched
 @@ -32,6 +32,12 @@ config IOSCHED_CFQ
@@ -22,14 +22,32 @@ index 421bef9..9092225 100644
  	  This is the default I/O scheduler.
  
 +config IOSCHED_SSTF
-+       tristate "SSTF I/O scheduler"
-+       default y
-+       ---help--
-+         SSTF IO scheduler
++        tristate "SSTF I/O scheduler"
++        default y
++        ---help---
++          SSTF IO scheduler
 +
  config CFQ_GROUP_IOSCHED
  	bool "CFQ Group Scheduling support"
  	depends on IOSCHED_CFQ && BLK_CGROUP
+@@ -55,6 +61,9 @@ choice
+ 	config DEFAULT_NOOP
+ 		bool "No-op"
+ 
++        config DEFAULT_SSTF
++                bool "SSTF" if IOSCHED_SSTF=y
++
+ endchoice
+ 
+ config DEFAULT_IOSCHED
+@@ -62,6 +71,7 @@ config DEFAULT_IOSCHED
+ 	default "deadline" if DEFAULT_DEADLINE
+ 	default "cfq" if DEFAULT_CFQ
+ 	default "noop" if DEFAULT_NOOP
++        default "sstf" if DEFAULT_SSTF
+ 
+ endmenu
+ 
 diff --git a/block/Makefile b/block/Makefile
 index a2ce6ac..912904c 100644
 --- a/block/Makefile
@@ -42,10 +60,10 @@ index a2ce6ac..912904c 100644
 +obj-$(CONFIG_IOSCHED_SSTF)	+= sstf-iosched.o
 diff --git a/block/sstf-iosched.c b/block/sstf-iosched.c
 new file mode 100644
-index 0000000..50a01ec
+index 0000000..6f5a889
 --- /dev/null
 +++ b/block/sstf-iosched.c
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,151 @@
 +/*
 + * SSTF elevator
 + */
@@ -72,7 +90,7 @@ index 0000000..50a01ec
 +{
 +	sector_t rq_sec = blk_rq_pos(rq);
 +
-+	return (ssd->pos > rq_sector) ? sd->pos - rq_sec : rq_sec - ssd->pos;
++	return (ssd->pos > rq_sec) ? ssd->pos - rq_sec : rq_sec - ssd->pos;
 +}
 +
 +static int sstf_dispatch(struct request_queue *q, int force)
@@ -97,6 +115,8 @@ index 0000000..50a01ec
 +static void sstf_add_request(struct request_queue *q, struct request *rq)
 +{
 +	struct sstf_data *ssd = q->elevator->elevator_data;
++	struct list_head *pos;
++	struct request *cur_rq;
 +
 +	list_for_each(pos, &ssd->queue)
 +	{
@@ -106,7 +126,7 @@ index 0000000..50a01ec
 +			return;
 +		}
 +	}
-+	list_add_tail(&rq->queuelist, &nd->queue);
++	list_add_tail(&rq->queuelist, &ssd->queue);
 +}
 +
 +static struct request *
@@ -139,7 +159,7 @@ index 0000000..50a01ec
 +		return -ENOMEM;
 +
 +	ssd = kmalloc_node(sizeof(*ssd), GFP_KERNEL, q->node);
-+	if (!nd) {
++	if (!ssd) {
 +		kobject_put(&eq->kobj);
 +		return -ENOMEM;
 +	}
@@ -159,7 +179,7 @@ index 0000000..50a01ec
 +	struct sstf_data *ssd = e->elevator_data;
 +
 +	BUG_ON(!list_empty(&ssd->queue));
-+	kfree(nd);
++	kfree(ssd);
 +}
 +
 +static struct elevator_type elevator_sstf = {
