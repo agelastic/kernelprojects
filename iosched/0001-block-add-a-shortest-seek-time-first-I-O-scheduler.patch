@@ -1,0 +1,200 @@
+From bb00826e7bebbc371e8b8f9b1362a1166b22f354 Mon Sep 17 00:00:00 2001
+From: Vitaly Osipov <vitaly.osipov@gmail.com>
+Date: Tue, 10 Jun 2014 16:11:15 +1000
+Subject: [PATCH] block: add a shortest seek time first I/O scheduler
+
+Based on the noop scheduler with a few modifications.
+
+Signed-off-by: Vitaly Osipov <vitaly.osipov@gmail.com>
+---
+ block/Kconfig.iosched |   6 ++
+ block/Makefile        |   2 +
+ block/sstf-iosched.c  | 149 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 157 insertions(+)
+ create mode 100644 block/sstf-iosched.c
+
+diff --git a/block/Kconfig.iosched b/block/Kconfig.iosched
+index 421bef9..9092225 100644
+--- a/block/Kconfig.iosched
++++ b/block/Kconfig.iosched
+@@ -32,6 +32,12 @@ config IOSCHED_CFQ
+ 
+ 	  This is the default I/O scheduler.
+ 
++config IOSCHED_SSTF
++       tristate "SSTF I/O scheduler"
++       default y
++       ---help--
++         SSTF IO scheduler
++
+ config CFQ_GROUP_IOSCHED
+ 	bool "CFQ Group Scheduling support"
+ 	depends on IOSCHED_CFQ && BLK_CGROUP
+diff --git a/block/Makefile b/block/Makefile
+index a2ce6ac..912904c 100644
+--- a/block/Makefile
++++ b/block/Makefile
+@@ -23,3 +23,5 @@ obj-$(CONFIG_BLOCK_COMPAT)	+= compat_ioctl.o
+ obj-$(CONFIG_BLK_DEV_INTEGRITY)	+= blk-integrity.o
+ obj-$(CONFIG_BLK_CMDLINE_PARSER)	+= cmdline-parser.o
+ obj-$(CONFIG_BLK_DEV_INTEGRITY) += bio-integrity.o
++
++obj-$(CONFIG_IOSCHED_SSTF)	+= sstf-iosched.o
+diff --git a/block/sstf-iosched.c b/block/sstf-iosched.c
+new file mode 100644
+index 0000000..50a01ec
+--- /dev/null
++++ b/block/sstf-iosched.c
+@@ -0,0 +1,149 @@
++/*
++ * SSTF elevator
++ */
++#include <linux/blkdev.h>
++#include <linux/elevator.h>
++#include <linux/bio.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/list.h>
++
++struct sstf_data {
++	struct list_head queue;
++	sector_t pos;
++};
++
++static void sstf_merged_requests(struct request_queue *q, struct request *rq,
++				 struct request *next)
++{
++	list_del_init(&next->queuelist);
++}
++
++static unsigned long seek_length(struct request *rq, struct sstf_data *ssd)
++{
++	sector_t rq_sec = blk_rq_pos(rq);
++
++	return (ssd->pos > rq_sector) ? sd->pos - rq_sec : rq_sec - ssd->pos;
++}
++
++static int sstf_dispatch(struct request_queue *q, int force)
++{
++	struct sstf_data *ssd = q->elevator->elevator_data;
++
++	if (!list_empty(&ssd->queue)) {
++		struct request *rq;
++
++		rq = list_entry(ssd->queue.next, struct request, queuelist);
++		list_del_init(&rq->queuelist);
++
++		ssd->pos = blk_rq_pos(rq) + blk_rq_sectors(rq);
++
++		elv_dispatch_sort(q, rq);
++		/* pr_debug("SSTF request dispatched\n"); */
++		return 1;
++	}
++	return 0;
++}
++
++static void sstf_add_request(struct request_queue *q, struct request *rq)
++{
++	struct sstf_data *ssd = q->elevator->elevator_data;
++
++	list_for_each(pos, &ssd->queue)
++	{
++		cur_rq = list_entry(pos, struct request, queuelist);
++		if (seek_length(rq, ssd) < seek_length(cur_rq, ssd)) {
++			list_add(&rq->queuelist, cur_rq->queuelist.prev);
++			return;
++		}
++	}
++	list_add_tail(&rq->queuelist, &nd->queue);
++}
++
++static struct request *
++sstf_former_request(struct request_queue *q, struct request *rq)
++{
++	struct sstf_data *ssd = q->elevator->elevator_data;
++
++	if (rq->queuelist.prev == &ssd->queue)
++		return NULL;
++	return list_entry(rq->queuelist.prev, struct request, queuelist);
++}
++
++static struct request *
++sstf_latter_request(struct request_queue *q, struct request *rq)
++{
++	struct sstf_data *ssd = q->elevator->elevator_data;
++
++	if (rq->queuelist.next == &ssd->queue)
++		return NULL;
++	return list_entry(rq->queuelist.next, struct request, queuelist);
++}
++
++static int sstf_init_queue(struct request_queue *q, struct elevator_type *e)
++{
++	struct sstf_data *ssd;
++	struct elevator_queue *eq;
++
++	eq = elevator_alloc(q, e);
++	if (!eq)
++		return -ENOMEM;
++
++	ssd = kmalloc_node(sizeof(*ssd), GFP_KERNEL, q->node);
++	if (!nd) {
++		kobject_put(&eq->kobj);
++		return -ENOMEM;
++	}
++	eq->elevator_data = ssd;
++
++	INIT_LIST_HEAD(&ssd->queue);
++	ssd->pos = 0;
++
++	spin_lock_irq(q->queue_lock);
++	q->elevator = eq;
++	spin_unlock_irq(q->queue_lock);
++	return 0;
++}
++
++static void sstf_exit_queue(struct elevator_queue *e)
++{
++	struct sstf_data *ssd = e->elevator_data;
++
++	BUG_ON(!list_empty(&ssd->queue));
++	kfree(nd);
++}
++
++static struct elevator_type elevator_sstf = {
++	.ops = {
++		.elevator_merge_req_fn		= sstf_merged_requests,
++		.elevator_dispatch_fn		= sstf_dispatch,
++		.elevator_add_req_fn		= sstf_add_request,
++		.elevator_former_req_fn		= sstf_former_request,
++		.elevator_latter_req_fn		= sstf_latter_request,
++		.elevator_init_fn		= sstf_init_queue,
++		.elevator_exit_fn		= sstf_exit_queue,
++	},
++	.elevator_name = "sstf",
++	.elevator_owner = THIS_MODULE,
++};
++
++static int __init sstf_init(void)
++{
++	pr_debug("Registering SSTF elevator\n");
++	return elv_register(&elevator_sstf);
++}
++
++static void __exit sstf_exit(void)
++{
++	pr_debug("SSTF elevator removed\n");
++	elv_unregister(&elevator_sstf);
++}
++
++module_init(sstf_init);
++module_exit(sstf_exit);
++
++
++MODULE_AUTHOR("Vitaly Osipov");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Shortest seek time first IO scheduler");
+-- 
+1.9.1
+
