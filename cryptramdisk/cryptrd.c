@@ -25,13 +25,20 @@
 MODULE_LICENSE("Dual BSD/GPL");
 
 static int cryptrd_major = 0;
-module_param(cryptrd_major, int, 0);
+module_param(cryptrd_major, int, S_IRUGO);
+MODULE_PARM_DESC(cryptrd_major, "Major number for the device");
+
 static int hardsect_size = 512;
-module_param(hardsect_size, int, 0);
-static int nsectors = 1024;	/* How big the drive is */
-module_param(nsectors, int, 0);
+module_param(hardsect_size, int, S_IRUGO);
+MODULE_PARM_DESC(hardsect_size, "Sector size");
+
+static int nsectors = 1024;
+module_param(nsectors, int, S_IRUGO);
+MODULE_PARM_DESC(nsectors, "Number of sectors");
+
 static int ndevices = 4;
-module_param(ndevices, int, 0);
+module_param(ndevices, int, S_IRUGO);
+MODULE_PARM_DESC(ndevices, "How many devices to create");
 
 /*
  * The different "request modes" we can use.
@@ -41,8 +48,10 @@ enum {
 	RM_FULL    = 1,	/* The full-blown version */
 	RM_NOQUEUE = 2,	/* Use make_request */
 };
+
 static int request_mode = RM_SIMPLE;
 module_param(request_mode, int, 0);
+MODULE_PARM_DESC(request_mode, "Which request mode to use");
 
 /*
  * Minor number and partition management.
