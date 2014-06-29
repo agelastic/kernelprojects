@@ -24,7 +24,7 @@
 
 MODULE_LICENSE("Dual BSD/GPL");
 
-static int cryptrd_major = 0; /* dynamic major */
+static int cryptrd_major; /* dynamic major */
 module_param(cryptrd_major, int, S_IRUGO);
 MODULE_PARM_DESC(cryptrd_major, "Major number for the device");
 
@@ -35,10 +35,6 @@ MODULE_PARM_DESC(hardsect_size, "Sector size");
 static int nsectors = 1024;
 module_param(nsectors, int, S_IRUGO);
 MODULE_PARM_DESC(nsectors, "Number of sectors");
-
-/*static int ndevices = 4;
-module_param(ndevices, int, S_IRUGO);
-MODULE_PARM_DESC(ndevices, "How many devices to create"); */
 
 /*
  * The different "request modes" we can use.
@@ -58,7 +54,7 @@ MODULE_PARM_DESC(request_mode, "Which request mode to use");
  */
 #define CRYPTRD_MINORS	16
 #define MINOR_SHIFT	4
-#define DEVNUM(kdevnum)	(MINOR(kdev_t_to_nr(kdevnum)) >> MINOR_SHIFT
+#define DEVNUM(kdevnum)	(MINOR(kdev_t_to_nr(kdevnum)) >> MINOR_SHIFT)
 
 /*
  * We can tweak our hardware sector size, but the kernel talks to us
@@ -69,23 +65,23 @@ MODULE_PARM_DESC(request_mode, "Which request mode to use");
 /*
  * After this much idle time, the driver will simulate a media change.
  */
-#define INVALIDATE_DELAY	30*HZ
+#define INVALIDATE_DELAY	(30*HZ)
 
 /*
  * The internal representation of our device.
  */
 struct cryptrd_dev {
-        int size;                       /* Device size in sectors */
-        u8 *data;                       /* The data array */
-        short users;                    /* How many users */
-        short media_change;             /* Flag a media change? */
-        spinlock_t lock;                /* For mutual exclusion */
-        struct request_queue *queue;    /* The device request queue */
-        struct gendisk *gd;             /* The gendisk structure */
-        struct timer_list timer;        /* For simulated media changes */
+	int size;                       /* Device size in sectors */
+	u8 *data;                       /* The data array */
+	short users;                    /* How many users */
+	short media_change;             /* Flag a media change? */
+	spinlock_t lock;                /* For mutual exclusion */
+	struct request_queue *queue;    /* The device request queue */
+	struct gendisk *gd;             /* The gendisk structure */
+	struct timer_list timer;        /* For simulated media changes */
 };
 
-static struct cryptrd_dev *devices = NULL;
+static struct cryptrd_dev *devices;
 
 /*
  * Handle an I/O request.
@@ -115,15 +111,13 @@ static void cryptrd_request(struct request_queue *q)
 
 	while ((req = blk_fetch_request(q)) != NULL) {
 		struct cryptrd_dev *dev = req->rq_disk->private_data;
+
 		if (req->cmd_type != REQ_TYPE_FS) {
-		        pr_notice( "Skip non-fs request\n");
+			pr_notice("Skip non-fs request\n");
 			__blk_end_request_cur(req, -EIO);
 			continue;
 		}
-    //    	printk (KERN_NOTICE "Req dev %d dir %ld sec %ld, nr %d f %lx\n",
-    //    			dev - Devices, rq_data_dir(req),
-    //    			req->sector, req->current_nr_sectors,
-    //    			req->flags);
+
 		cryptrd_transfer(dev, blk_rq_pos(req), blk_rq_cur_sectors(req),
 				req->buffer, rq_data_dir(req));
 		__blk_end_request_cur(req, 1);
@@ -143,6 +137,7 @@ static int cryptrd_xfer_bio(struct cryptrd_dev *dev, struct bio *bio)
 	/* Do each segment independently. */
 	bio_for_each_segment(bvec, bio, i) {
 		char *buffer = __bio_kmap_atomic(bio, i);
+
 		cryptrd_transfer(dev, sector, bio_cur_bytes(bio) / KERNEL_SECTOR_SIZE,
 				buffer, bio_data_dir(bio) == WRITE);
 		sector += bio_cur_bytes(bio) / KERNEL_SECTOR_SIZE;
@@ -158,7 +153,7 @@ static int cryptrd_xfer_request(struct cryptrd_dev *dev, struct request *req)
 {
 	struct bio *bio;
 	int nsect = 0;
-    
+
 	__rq_for_each_bio(bio, req) {
 		cryptrd_xfer_bio(dev, bio);
 		nsect += bio->bi_size/KERNEL_SECTOR_SIZE;
@@ -179,7 +174,7 @@ static void cryptrd_full_request(struct request_queue *q)
 
 	while ((req = blk_fetch_request(q)) != NULL) {
 		if (req->cmd_type != REQ_TYPE_FS) {
-		        pr_notice("Skip non-fs request\n");
+			pr_notice("Skip non-fs request\n");
 			__blk_end_request(req, -EIO, blk_rq_cur_bytes(req));
 			continue;
 		}
@@ -213,7 +208,7 @@ static int cryptrd_open(struct block_device *bdev, fmode_t mode)
 
 	del_timer_sync(&dev->timer);
 	spin_lock(&dev->lock);
-	if (! dev->users) 
+	if (!dev->users)
 		check_disk_change(bdev);
 	dev->users++;
 	spin_unlock(&dev->lock);
@@ -240,7 +235,7 @@ static void cryptrd_release(struct gendisk *disk, fmode_t mode)
 int cryptrd_media_changed(struct gendisk *gd)
 {
 	struct cryptrd_dev *dev = gd->private_data;
-	
+
 	return dev->media_change;
 }
 
@@ -251,10 +246,10 @@ int cryptrd_media_changed(struct gendisk *gd)
 int cryptrd_revalidate(struct gendisk *gd)
 {
 	struct cryptrd_dev *dev = gd->private_data;
-	
+
 	if (dev->media_change) {
 		dev->media_change = 0;
-		memset (dev->data, 0, dev->size);
+		memset(dev->data, 0, dev->size);
 	}
 	return 0;
 }
@@ -268,8 +263,8 @@ void cryptrd_invalidate(unsigned long ldev)
 	struct cryptrd_dev *dev = (struct cryptrd_dev *) ldev;
 
 	spin_lock(&dev->lock);
-	if (dev->users || !dev->data) 
-	        pr_warn("cryptrd: timer sanity check failed\n");
+	if (dev->users || !dev->data)
+		pr_warn("cryptrd: timer sanity check failed\n");
 	else
 		dev->media_change = 1;
 	spin_unlock(&dev->lock);
@@ -279,16 +274,16 @@ void cryptrd_invalidate(unsigned long ldev)
  * The ioctl() implementation
  */
 
-int cryptrd_ioctl (struct block_device *bdev, fmode_t fmode,
-                 unsigned int cmd, unsigned long arg)
+int cryptrd_ioctl(struct block_device *bdev, fmode_t fmode,
+		   unsigned int cmd, unsigned long arg)
 {
 	long size;
 	struct hd_geometry geo;
 	struct cryptrd_dev *dev = bdev->bd_disk->private_data;
 
-	switch(cmd) {
-	    case HDIO_GETGEO:
-        	/*
+	switch (cmd) {
+	case HDIO_GETGEO:
+		/*
 		 * Get geometry: since we are a virtual device, we have to make
 		 * up something plausible.  So we claim 16 sectors, four heads,
 		 * and calculate the corresponding number of cylinders.  We set the
@@ -312,13 +307,13 @@ int cryptrd_ioctl (struct block_device *bdev, fmode_t fmode,
 /*
  * The device operations structure.
  */
-static struct block_device_operations cryptrd_ops = {
-	.owner           = THIS_MODULE,
-	.open 	         = cryptrd_open,
-	.release 	 = cryptrd_release,
-	.media_changed   = cryptrd_media_changed,
+static const struct block_device_operations cryptrd_ops = {
+	.owner		= THIS_MODULE,
+	.open		= cryptrd_open,
+	.release	= cryptrd_release,
+	.media_changed	= cryptrd_media_changed,
 	.revalidate_disk = cryptrd_revalidate,
-	.ioctl	         = cryptrd_ioctl
+	.ioctl		= cryptrd_ioctl
 };
 
 
@@ -335,37 +330,37 @@ static void setup_device(struct cryptrd_dev *dev)
 		return;
 	}
 	spin_lock_init(&dev->lock);
-	
+
 	/*
 	 * The timer which "invalidates" the device.
 	 */
 	init_timer(&dev->timer);
 	dev->timer.data = (unsigned long) dev;
 	dev->timer.function = cryptrd_invalidate;
-	
+
 	/*
 	 * The I/O queue, depending on whether we are using our own
 	 * make_request function or not.
 	 */
 	switch (request_mode) {
-	    case RM_NOQUEUE:
+	case RM_NOQUEUE:
 		dev->queue = blk_alloc_queue(GFP_KERNEL);
 		if (dev->queue == NULL)
 			goto out_vfree;
 		blk_queue_make_request(dev->queue, cryptrd_make_request);
 		break;
 
-	    case RM_FULL:
+	case RM_FULL:
 		dev->queue = blk_init_queue(cryptrd_full_request, &dev->lock);
 		if (dev->queue == NULL)
 			goto out_vfree;
 		break;
 
-	    default:
-		    pr_notice("Bad request mode %d, using simple\n", request_mode);
-        	/* fall into.. */
-	
-	    case RM_SIMPLE:
+	default:
+		pr_notice("Bad request mode %d, using simple\n", request_mode);
+		/* fall into.. */
+
+	case RM_SIMPLE:
 		dev->queue = blk_init_queue(cryptrd_request, &dev->lock);
 		if (dev->queue == NULL)
 			goto out_vfree;
@@ -377,7 +372,7 @@ static void setup_device(struct cryptrd_dev *dev)
 	 * And the gendisk structure.
 	 */
 	dev->gd = alloc_disk(CRYPTRD_MINORS);
-	if (! dev->gd) {
+	if (!dev->gd) {
 		pr_notice("alloc_disk failure\n");
 		goto out_vfree;
 	}
@@ -386,11 +381,11 @@ static void setup_device(struct cryptrd_dev *dev)
 	dev->gd->fops = &cryptrd_ops;
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
-	snprintf (dev->gd->disk_name, 32, "cryptrd");
+	snprintf(dev->gd->disk_name, 32, "cryptrd");
 	set_capacity(dev->gd, nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
 	add_disk(dev->gd);
 	return;
-	
+
 out_vfree:
 	if (dev->data)
 		vfree(dev->data);
@@ -398,24 +393,24 @@ out_vfree:
 
 
 
-static int __init cryptrd_init(void) 
+static int __init cryptrd_init(void)
 {
 	cryptrd_major = register_blkdev(cryptrd_major, "cryptrd");
 	if (cryptrd_major <= 0) {
-	        pr_warn("cryptrd: unable to get major number\n");
+		pr_warn("cryptrd: unable to get major number\n");
 		return -EIO;
 	}
 	/*
 	 * Allocate the device array, and initialize each one.
 	 */
-	devices = kzalloc(sizeof (struct cryptrd_dev), GFP_KERNEL);
+	devices = kzalloc(sizeof(struct cryptrd_dev), GFP_KERNEL);
 	if (devices == NULL)
 		goto out_unregister;
 	setup_device(devices);
-    
+
 	return 0;
 
-  out_unregister:
+out_unregister:
 	unregister_blkdev(cryptrd_major, "cryptrd");
 	return -ENOMEM;
 }
@@ -441,6 +436,6 @@ static void cryptrd_exit(void)
 	unregister_blkdev(cryptrd_major, "cryptrd");
 	kfree(devices);
 }
-	
+
 module_init(cryptrd_init);
 module_exit(cryptrd_exit);
