@@ -193,78 +193,6 @@ static void cryptrd_make_request(struct request_queue *q, struct bio *bio)
 
 
 /*
- * Open and close.
- */
-
-static int cryptrd_open(struct block_device *bdev, fmode_t mode)
-{
-	struct cryptrd_dev *dev = bdev->bd_disk->private_data;
-
-	del_timer_sync(&dev->timer);
-	spin_lock(&dev->lock);
-	if (!dev->users)
-		check_disk_change(bdev);
-	dev->users++;
-	spin_unlock(&dev->lock);
-	return 0;
-}
-
-static void cryptrd_release(struct gendisk *disk, fmode_t mode)
-{
-	struct cryptrd_dev *dev = disk->private_data;
-
-	spin_lock(&dev->lock);
-	dev->users--;
-
-	if (!dev->users) {
-		dev->timer.expires = jiffies + INVALIDATE_DELAY;
-		add_timer(&dev->timer);
-	}
-	spin_unlock(&dev->lock);
-}
-
-/*
- * Look for a (simulated) media change.
- */
-int cryptrd_media_changed(struct gendisk *gd)
-{
-	struct cryptrd_dev *dev = gd->private_data;
-
-	return dev->media_change;
-}
-
-/*
- * Revalidate.  WE DO NOT TAKE THE LOCK HERE, for fear of deadlocking
- * with open.  That needs to be reevaluated.
- */
-int cryptrd_revalidate(struct gendisk *gd)
-{
-	struct cryptrd_dev *dev = gd->private_data;
-
-	if (dev->media_change) {
-		dev->media_change = 0;
-		memset(dev->data, 0, dev->size);
-	}
-	return 0;
-}
-
-/*
- * The "invalidate" function runs out of the device timer; it sets
- * a flag to simulate the removal of the media.
- */
-void cryptrd_invalidate(unsigned long ldev)
-{
-	struct cryptrd_dev *dev = (struct cryptrd_dev *) ldev;
-
-	spin_lock(&dev->lock);
-	if (dev->users || !dev->data)
-		pr_warn("cryptrd: timer sanity check failed\n");
-	else
-		dev->media_change = 1;
-	spin_unlock(&dev->lock);
-}
-
-/*
  * The ioctl() implementation
  */
 
@@ -303,10 +231,6 @@ int cryptrd_ioctl(struct block_device *bdev, fmode_t fmode,
  */
 static const struct block_device_operations cryptrd_ops = {
 	.owner		= THIS_MODULE,
-	.open		= cryptrd_open,
-	.release	= cryptrd_release,
-	.media_changed	= cryptrd_media_changed,
-	.revalidate_disk = cryptrd_revalidate,
 	.ioctl		= cryptrd_ioctl
 };
 
@@ -324,13 +248,6 @@ static void setup_device(struct cryptrd_dev *dev)
 		return;
 	}
 	spin_lock_init(&dev->lock);
-
-	/*
-	 * The timer which "invalidates" the device.
-	 */
-	init_timer(&dev->timer);
-	dev->timer.data = (unsigned long) dev;
-	dev->timer.function = cryptrd_invalidate;
 
 	/*
 	 * The I/O queue, depending on whether we are using our own
