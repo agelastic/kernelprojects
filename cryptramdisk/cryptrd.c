@@ -24,7 +24,7 @@
 
 MODULE_LICENSE("Dual BSD/GPL");
 
-static int cryptrd_major = 0;
+static int cryptrd_major = 0; /* dynamic major */
 module_param(cryptrd_major, int, S_IRUGO);
 MODULE_PARM_DESC(cryptrd_major, "Major number for the device");
 
@@ -36,9 +36,9 @@ static int nsectors = 1024;
 module_param(nsectors, int, S_IRUGO);
 MODULE_PARM_DESC(nsectors, "Number of sectors");
 
-static int ndevices = 4;
+/*static int ndevices = 4;
 module_param(ndevices, int, S_IRUGO);
-MODULE_PARM_DESC(ndevices, "How many devices to create");
+MODULE_PARM_DESC(ndevices, "How many devices to create"); */
 
 /*
  * The different "request modes" we can use.
@@ -325,12 +325,9 @@ static struct block_device_operations cryptrd_ops = {
 /*
  * Set up our internal device.
  */
-static void setup_device(struct cryptrd_dev *dev, int which)
+static void setup_device(struct cryptrd_dev *dev)
 {
-	/*
-	 * Get some memory.
-	 */
-	memset (dev, 0, sizeof (struct cryptrd_dev));
+
 	dev->size = nsectors*hardsect_size;
 	dev->data = vmalloc(dev->size);
 	if (dev->data == NULL) {
@@ -385,28 +382,24 @@ static void setup_device(struct cryptrd_dev *dev, int which)
 		goto out_vfree;
 	}
 	dev->gd->major = cryptrd_major;
-	dev->gd->first_minor = which*CRYPTRD_MINORS;
+	dev->gd->first_minor = 0;
 	dev->gd->fops = &cryptrd_ops;
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
-	snprintf (dev->gd->disk_name, 32, "cryptrd%c", which + 'a');
+	snprintf (dev->gd->disk_name, 32, "cryptrd");
 	set_capacity(dev->gd, nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
 	add_disk(dev->gd);
 	return;
-
-  out_vfree:
+	
+out_vfree:
 	if (dev->data)
 		vfree(dev->data);
 }
 
 
 
-static int __init cryptrd_init(void) //good?
+static int __init cryptrd_init(void) 
 {
-	int i;
-	/*
-	 * Get registered.
-	 */
 	cryptrd_major = register_blkdev(cryptrd_major, "cryptrd");
 	if (cryptrd_major <= 0) {
 	        pr_warn("cryptrd: unable to get major number\n");
@@ -415,40 +408,36 @@ static int __init cryptrd_init(void) //good?
 	/*
 	 * Allocate the device array, and initialize each one.
 	 */
-	devices = kmalloc(ndevices*sizeof (struct cryptrd_dev), GFP_KERNEL);
+	devices = kzalloc(sizeof (struct cryptrd_dev), GFP_KERNEL);
 	if (devices == NULL)
 		goto out_unregister;
-	for (i = 0; i < ndevices; i++) 
-		setup_device(devices + i, i);
+	setup_device(devices);
     
 	return 0;
 
   out_unregister:
-	unregister_blkdev(cryptrd_major, "sbd");
+	unregister_blkdev(cryptrd_major, "cryptrd");
 	return -ENOMEM;
 }
 
-static void cryptrd_exit(void) //good
+static void cryptrd_exit(void)
 {
-	int i;
+	struct cryptrd_dev *dev = devices;
 
-	for (i = 0; i < ndevices; i++) {
-		struct cryptrd_dev *dev = devices + i;
-
-		del_timer_sync(&dev->timer);
-		if (dev->gd) {
-			del_gendisk(dev->gd);
-			put_disk(dev->gd);
-		}
-		if (dev->queue) {
-			if (request_mode == RM_NOQUEUE)
-				blk_put_queue(dev->queue);
-			else
-				blk_cleanup_queue(dev->queue);
-		}
-		if (dev->data)
-			vfree(dev->data);
+	del_timer_sync(&dev->timer);
+	if (dev->gd) {
+		del_gendisk(dev->gd);
+		put_disk(dev->gd);
 	}
+	if (dev->queue) {
+		if (request_mode == RM_NOQUEUE)
+			blk_put_queue(dev->queue);
+		else
+			blk_cleanup_queue(dev->queue);
+	}
+	if (dev->data)
+		vfree(dev->data);
+
 	unregister_blkdev(cryptrd_major, "cryptrd");
 	kfree(devices);
 }
