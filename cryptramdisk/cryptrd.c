@@ -25,12 +25,6 @@
 MODULE_LICENSE("Dual BSD/GPL");
 
 static int cryptrd_major; /* dynamic major */
-module_param(cryptrd_major, int, S_IRUGO);
-MODULE_PARM_DESC(cryptrd_major, "Major number for the device");
-
-static int hardsect_size = 512;
-module_param(hardsect_size, int, S_IRUGO);
-MODULE_PARM_DESC(hardsect_size, "Sector size");
 
 static int nsectors = 1024;
 module_param(nsectors, int, S_IRUGO);
@@ -289,7 +283,7 @@ int cryptrd_ioctl(struct block_device *bdev, fmode_t fmode,
 		 * and calculate the corresponding number of cylinders.  We set the
 		 * start of data at sector four.
 		 */
-		size = dev->size*(hardsect_size/KERNEL_SECTOR_SIZE);
+		size = dev->size;
 		geo.cylinders = (size & ~0x3f) >> 6;
 		geo.heads = 4;
 		geo.sectors = 16;
@@ -323,7 +317,7 @@ static const struct block_device_operations cryptrd_ops = {
 static void setup_device(struct cryptrd_dev *dev)
 {
 
-	dev->size = nsectors*hardsect_size;
+	dev->size = nsectors * KERNEL_SECTOR_SIZE;
 	dev->data = vmalloc(dev->size);
 	if (dev->data == NULL) {
 		pr_notice("vmalloc failure.\n");
@@ -366,7 +360,7 @@ static void setup_device(struct cryptrd_dev *dev)
 			goto out_vfree;
 		break;
 	}
-	blk_queue_logical_block_size(dev->queue, hardsect_size);
+	blk_queue_logical_block_size(dev->queue, KERNEL_SECTOR_SIZE);
 	dev->queue->queuedata = dev;
 	/*
 	 * And the gendisk structure.
@@ -382,7 +376,7 @@ static void setup_device(struct cryptrd_dev *dev)
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
 	snprintf(dev->gd->disk_name, 32, "cryptrd");
-	set_capacity(dev->gd, nsectors*(hardsect_size/KERNEL_SECTOR_SIZE));
+	set_capacity(dev->gd, nsectors);
 	add_disk(dev->gd);
 	return;
 
@@ -391,11 +385,9 @@ out_vfree:
 		vfree(dev->data);
 }
 
-
-
 static int __init cryptrd_init(void)
 {
-	cryptrd_major = register_blkdev(cryptrd_major, "cryptrd");
+	cryptrd_major = register_blkdev(0, "cryptrd");
 	if (cryptrd_major <= 0) {
 		pr_warn("cryptrd: unable to get major number\n");
 		return -EIO;
