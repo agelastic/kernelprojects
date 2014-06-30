@@ -191,47 +191,23 @@ static void cryptrd_make_request(struct request_queue *q, struct bio *bio)
 	bio_endio(bio, status);
 }
 
-
-/*
- * The ioctl() implementation
- */
-
-int cryptrd_ioctl(struct block_device *bdev, fmode_t fmode,
-		   unsigned int cmd, unsigned long arg)
+static int cryptrd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 {
-	long size;
-	struct hd_geometry geo;
 	struct cryptrd_dev *dev = bdev->bd_disk->private_data;
 
-	switch (cmd) {
-	case HDIO_GETGEO:
-		/*
-		 * Get geometry: since we are a virtual device, we have to make
-		 * up something plausible.  So we claim 16 sectors, four heads,
-		 * and calculate the corresponding number of cylinders.  We set the
-		 * start of data at sector four.
-		 */
-		size = dev->size;
-		geo.cylinders = (size & ~0x3f) >> 6;
-		geo.heads = 4;
-		geo.sectors = 16;
-		geo.start = 4;
-		if (copy_to_user((void __user *) arg, &geo, sizeof(geo)))
-			return -EFAULT;
-		return 0;
-	}
-
-	return -ENOTTY; /* unknown command */
+	geo->cylinders = (dev->size & ~0x3f) >> 6;
+	geo->heads = 4;
+	geo->sectors = 16;
+	geo->start = 4;
+	return 0;
 }
-
-
 
 /*
  * The device operations structure.
  */
 static const struct block_device_operations cryptrd_ops = {
 	.owner		= THIS_MODULE,
-	.ioctl		= cryptrd_ioctl
+	.getgeo		= cryptrd_getgeo,
 };
 
 
