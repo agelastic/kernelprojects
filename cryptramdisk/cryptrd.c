@@ -31,24 +31,11 @@ module_param(nsectors, int, S_IRUGO);
 MODULE_PARM_DESC(nsectors, "Number of sectors");
 
 /*
- * The different "request modes" we can use.
- */
-enum {
-	RM_SIMPLE  = 0,	/* The extra-simple request function */
-	RM_FULL    = 1,	/* The full-blown version */
-	RM_NOQUEUE = 2,	/* Use make_request */
-};
-
-static int request_mode = RM_SIMPLE;
-module_param(request_mode, int, 0);
-MODULE_PARM_DESC(request_mode, "Which request mode to use");
-
-/*
  * Minor number and partition management.
  */
-#define CRYPTRD_MINORS	16
-#define MINOR_SHIFT	4
-#define DEVNUM(kdevnum)	(MINOR(kdev_t_to_nr(kdevnum)) >> MINOR_SHIFT)
+//#define CRYPTRD_MINORS	16
+//#define MINOR_SHIFT	4
+//#define DEVNUM(kdevnum)	(MINOR(kdev_t_to_nr(kdevnum)) >> MINOR_SHIFT)
 
 /*
  * We can tweak our hardware sector size, but the kernel talks to us
@@ -118,79 +105,6 @@ static void cryptrd_request(struct request_queue *q)
 	}
 }
 
-
-/*
- * Transfer a single BIO.
- */
-static int cryptrd_xfer_bio(struct cryptrd_dev *dev, struct bio *bio)
-{
-	int i;
-	struct bio_vec *bvec;
-	sector_t sector = bio->bi_sector;
-
-	/* Do each segment independently. */
-	bio_for_each_segment(bvec, bio, i) {
-		char *buffer = __bio_kmap_atomic(bio, i);
-
-		cryptrd_transfer(dev, sector, bio_cur_bytes(bio) / KERNEL_SECTOR_SIZE,
-				buffer, bio_data_dir(bio) == WRITE);
-		sector += bio_cur_bytes(bio) / KERNEL_SECTOR_SIZE;
-		__bio_kunmap_atomic(bio);
-	}
-	return 0; /* Always "succeed" */
-}
-
-/*
- * Transfer a full request.
- */
-static int cryptrd_xfer_request(struct cryptrd_dev *dev, struct request *req)
-{
-	struct bio *bio;
-	int nsect = 0;
-
-	__rq_for_each_bio(bio, req) {
-		cryptrd_xfer_bio(dev, bio);
-		nsect += bio->bi_size/KERNEL_SECTOR_SIZE;
-	}
-	return nsect;
-}
-
-
-
-/*
- * Smarter request function that "handles clustering".
- */
-static void cryptrd_full_request(struct request_queue *q)
-{
-	struct request *req;
-	int sectors_xferred;
-	struct cryptrd_dev *dev = q->queuedata;
-
-	while ((req = blk_fetch_request(q)) != NULL) {
-		if (req->cmd_type != REQ_TYPE_FS) {
-			pr_notice("Skip non-fs request\n");
-			__blk_end_request(req, -EIO, blk_rq_cur_bytes(req));
-			continue;
-		}
-		sectors_xferred = cryptrd_xfer_request(dev, req);
-		__blk_end_request(req, 0, sectors_xferred);
-	}
-}
-
-
-
-/*
- * The direct make request version.
- */
-static void cryptrd_make_request(struct request_queue *q, struct bio *bio)
-{
-	struct cryptrd_dev *dev = q->queuedata;
-	int status;
-
-	status = cryptrd_xfer_bio(dev, bio);
-	bio_endio(bio, status);
-}
-
 static int cryptrd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 {
 	struct cryptrd_dev *dev = bdev->bd_disk->private_data;
@@ -225,40 +139,16 @@ static void setup_device(struct cryptrd_dev *dev)
 	}
 	spin_lock_init(&dev->lock);
 
-	/*
-	 * The I/O queue, depending on whether we are using our own
-	 * make_request function or not.
-	 */
-	switch (request_mode) {
-	case RM_NOQUEUE:
-		dev->queue = blk_alloc_queue(GFP_KERNEL);
-		if (dev->queue == NULL)
-			goto out_vfree;
-		blk_queue_make_request(dev->queue, cryptrd_make_request);
-		break;
+	dev->queue = blk_init_queue(cryptrd_request, &dev->lock);
+	if (dev->queue == NULL)
+		goto out_vfree;
 
-	case RM_FULL:
-		dev->queue = blk_init_queue(cryptrd_full_request, &dev->lock);
-		if (dev->queue == NULL)
-			goto out_vfree;
-		break;
-
-	default:
-		pr_notice("Bad request mode %d, using simple\n", request_mode);
-		/* fall into.. */
-
-	case RM_SIMPLE:
-		dev->queue = blk_init_queue(cryptrd_request, &dev->lock);
-		if (dev->queue == NULL)
-			goto out_vfree;
-		break;
-	}
 	blk_queue_logical_block_size(dev->queue, KERNEL_SECTOR_SIZE);
 	dev->queue->queuedata = dev;
 	/*
 	 * And the gendisk structure.
 	 */
-	dev->gd = alloc_disk(CRYPTRD_MINORS);
+	dev->gd = alloc_disk(1);
 	if (!dev->gd) {
 		pr_notice("alloc_disk failure\n");
 		goto out_vfree;
@@ -310,10 +200,7 @@ static void cryptrd_exit(void)
 		put_disk(dev->gd);
 	}
 	if (dev->queue) {
-		if (request_mode == RM_NOQUEUE)
-			blk_put_queue(dev->queue);
-		else
-			blk_cleanup_queue(dev->queue);
+		blk_cleanup_queue(dev->queue);
 	}
 	if (dev->data)
 		vfree(dev->data);
